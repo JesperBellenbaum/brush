@@ -30,7 +30,7 @@ endif
 run-viewer:
 ifeq ($(shell uname),Darwin)
 	@echo "Running with viewer and cleared Homebrew library paths (macOS Sequoia fix)..."
-	env DYLD_LIBRARY_PATH="" DYLD_FALLBACK_LIBRARY_PATH="" cargo run --bin brush_app -- --with-viewer
+	env DYLD_LIBRARY_PATH="" DYLD_FALLBACK_LIBRARY_PATH="" cargo run --bin brush_app -- --with-viewer -- --release
 else
 	cargo run --bin brush_app -- --with-viewer
 endif

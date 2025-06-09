@@ -63,7 +63,10 @@ pub fn create_egui_options() -> WgpuConfiguration {
                     label: Some("egui+burn"),
                     required_features: adapter
                         .features()
-                        .difference(Features::MAPPABLE_PRIMARY_BUFFERS),
+                        .difference(Features::MAPPABLE_PRIMARY_BUFFERS)
+                        .difference(Features::TIMESTAMP_QUERY)
+                        .difference(Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
+                        .difference(Features::TIMESTAMP_QUERY_INSIDE_PASSES),
                     required_limits: adapter.limits(),
                     memory_hints: wgpu::MemoryHints::MemoryUsage,
                     trace: wgpu::Trace::Off,
