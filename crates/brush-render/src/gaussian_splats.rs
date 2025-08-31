@@ -60,6 +60,19 @@ pub fn subsample_points_density_aware(
     max_count: u32,
     rng: &mut impl Rng,
 ) -> SubsampledPointData {
+    subsample_points_density_aware_with_sh_degree(positions, colors, scales, rotations, opacities, max_count, 3, rng)
+}
+
+pub fn subsample_points_density_aware_with_sh_degree(
+    positions: Vec<f32>,         // flat x,y,z,x,y,z...
+    colors: Option<Vec<f32>>,    // flat sh coefficients per splat
+    scales: Option<Vec<f32>>,    // flat sx,sy,sz,sx,sy,sz...
+    rotations: Option<Vec<f32>>, // flat qx,qy,qz,qw,qx,qy,qz,qw...
+    opacities: Option<Vec<f32>>,
+    max_count: u32,
+    sh_coeffs_per_splat: usize,
+    rng: &mut impl Rng,
+) -> SubsampledPointData {
     let num_points = positions.len() / 3;
     if num_points <= max_count as usize {
         return SubsampledPointData {
@@ -106,7 +119,7 @@ pub fn subsample_points_density_aware(
         let mut indices: Vec<usize> = (0..num_points).collect();
         indices.shuffle(rng);
         let selected_indices: Vec<usize> = indices.into_iter().take(max_count as usize).collect();
-        return extract_subsampled_data(&points, &selected_indices, colors, scales, rotations, opacities);
+        return extract_subsampled_data(&points, &selected_indices, colors, scales, rotations, opacities, sh_coeffs_per_splat);
     }
 
     let voxel_size = extent / grid_size as f32;
@@ -163,7 +176,7 @@ pub fn subsample_points_density_aware(
     }
 
     // Extract data using the selected indices
-    extract_subsampled_data(&points, &selected_indices, colors, scales, rotations, opacities)
+    extract_subsampled_data(&points, &selected_indices, colors, scales, rotations, opacities, sh_coeffs_per_splat)
 }
 
 fn extract_subsampled_data(
@@ -173,6 +186,7 @@ fn extract_subsampled_data(
     scales: Option<Vec<f32>>,
     rotations: Option<Vec<f32>>,
     opacities: Option<Vec<f32>>,
+    sh_coeffs_per_splat: usize,
 ) -> SubsampledPointData {
     // Sort indices for consistent results and bounds checking
     let mut sorted_indices = indices.to_vec();
@@ -188,14 +202,15 @@ fn extract_subsampled_data(
         sorted_indices
             .iter()
             .filter_map(|&i| {
-                let base = i * 3;
-                if base + 2 < c.len() {
-                    Some([c[base], c[base + 1], c[base + 2]])
+                let base = i * sh_coeffs_per_splat;
+                if base + sh_coeffs_per_splat <= c.len() {
+                    Some(&c[base..base + sh_coeffs_per_splat])
                 } else {
                     None
                 }
             })
             .flatten()
+            .copied()
             .collect()
     });
 

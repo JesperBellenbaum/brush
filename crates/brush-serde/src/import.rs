@@ -16,7 +16,7 @@ use tokio::io::AsyncReadExt;
 use tokio_stream::StreamExt;
 
 use crate::ply_gaussian::{PlyGaussian, QuantSh, QuantSplat};
-use brush_render::gaussian_splats::subsample_points_density_aware;
+use brush_render::gaussian_splats::subsample_points_density_aware_with_sh_degree;
 
 type StreamEmitter = TryStreamEmitter<SplatMessage, DeserializeError>;
 
@@ -176,14 +176,18 @@ async fn apply_density_subsampling_to_splats(
         .expect("Failed to get opacities");
 
     // Apply density-aware subsampling
+    let num_splats = positions.len() / 3;
+    let sh_coeffs_per_splat = sh_coeffs.len() / num_splats;
+    
     let mut rng = rand::rng();
-    let subsampled = subsample_points_density_aware(
+    let subsampled = subsample_points_density_aware_with_sh_degree(
         positions,
         Some(sh_coeffs),
         Some(log_scales),
         Some(rotations),
         Some(opacities),
         max_count,
+        sh_coeffs_per_splat,
         &mut rng,
     );
 
