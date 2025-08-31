@@ -149,7 +149,7 @@ async fn apply_density_subsampling_to_splats(
         .into_data_async()
         .await
         .into_vec::<f32>()
-        .expect("Failed to get colors");
+        .expect("Failed to get SH coeffs");
 
     let log_scales = splats
         .log_scales
@@ -175,10 +175,25 @@ async fn apply_density_subsampling_to_splats(
         .into_vec::<f32>()
         .expect("Failed to get opacities");
 
-    // Apply density-aware subsampling
+    // Basic consistency checks (debug-only friendly)
     let num_splats = positions.len() / 3;
-    let sh_coeffs_per_splat = sh_coeffs.len() / num_splats;
-    
+    assert_eq!(positions.len() % 3, 0, "positions must be divisible by 3");
+    assert_eq!(log_scales.len(), num_splats * 3, "scales must be 3 per splat");
+    assert_eq!(rotations.len(), num_splats * 4, "rotations must be 4 per splat");
+    assert_eq!(opacities.len(), num_splats, "opacities must be 1 per splat");
+
+    // Total SH coeffs per splat (RGB-interleaved layout).
+    let sh_coeffs_per_splat = if num_splats > 0 {
+        sh_coeffs.len() / num_splats
+    } else {
+        0
+    };
+    assert!(
+        num_splats == 0 || sh_coeffs.len() == num_splats * sh_coeffs_per_splat,
+        "invalid SH coeff array length"
+    );
+
+    // Apply density-aware subsampling
     let mut rng = rand::rng();
     let subsampled = subsample_points_density_aware_with_sh_degree(
         positions,
@@ -192,15 +207,17 @@ async fn apply_density_subsampling_to_splats(
     );
 
     // Create new Splats from subsampled data
+    // NOTE: Fixed argument order: rotations (4) then scales (3).
     Splats::from_raw(
         subsampled.positions,
-        subsampled.scales,
-        subsampled.rotations,
+        subsampled.rotations, // rot_data (correct slot)
+        subsampled.scales,    // scale_data (correct slot)
         subsampled.colors,
         subsampled.opacities,
         &splats.device(),
     )
 }
+
 
 pub fn stream_splat_from_ply<T: AsyncRead + SendNotWasm + Unpin>(
     mut reader: T,
