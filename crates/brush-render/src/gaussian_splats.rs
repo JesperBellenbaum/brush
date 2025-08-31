@@ -42,6 +42,250 @@ pub fn inverse_sigmoid(x: f32) -> f32 {
     (x / (1.0 - x)).ln()
 }
 
+#[derive(Debug)]
+pub struct SubsampledPointData {
+    pub positions: Vec<f32>,
+    pub colors: Option<Vec<f32>>,
+    pub scales: Option<Vec<f32>>,
+    pub rotations: Option<Vec<f32>>,
+    pub opacities: Option<Vec<f32>>,
+}
+
+pub fn subsample_points_density_aware(
+    positions: Vec<f32>,         // flat x,y,z,x,y,z...
+    colors: Option<Vec<f32>>,    // flat r,g,b,r,g,b...
+    scales: Option<Vec<f32>>,    // flat sx,sy,sz,sx,sy,sz...
+    rotations: Option<Vec<f32>>, // flat qx,qy,qz,qw,qx,qy,qz,qw...
+    opacities: Option<Vec<f32>>,
+    max_count: u32,
+    rng: &mut impl Rng,
+) -> SubsampledPointData {
+    let num_points = positions.len() / 3;
+    if num_points <= max_count as usize {
+        return SubsampledPointData {
+            positions,
+            colors,
+            scales,
+            rotations,
+            opacities,
+        };
+    }
+
+    // Handle edge cases
+    if num_points == 0 || max_count == 0 {
+        return SubsampledPointData {
+            positions: Vec::new(),
+            colors: colors.map(|_| Vec::new()),
+            scales: scales.map(|_| Vec::new()),
+            rotations: rotations.map(|_| Vec::new()),
+            opacities: opacities.map(|_| Vec::new()),
+        };
+    }
+
+    // Convert to Vec3 for easier processing
+    let points: Vec<Vec3> = positions
+        .chunks_exact(3)
+        .map(|chunk| Vec3::new(chunk[0], chunk[1], chunk[2]))
+        .collect();
+
+    // Compute bounding box
+    let mut min = Vec3::splat(f32::MAX);
+    let mut max = Vec3::splat(f32::MIN);
+    for pos in &points {
+        min = min.min(*pos);
+        max = max.max(*pos);
+    }
+
+    let grid_size = 32; // 32^3 voxel grid
+    let extent = max - min;
+    
+    // Handle degenerate case where all points are the same
+    if extent.length() < f32::EPSILON {
+        // Randomly sample from identical points
+        use rand::seq::SliceRandom;
+        let mut indices: Vec<usize> = (0..num_points).collect();
+        indices.shuffle(rng);
+        let selected_indices: Vec<usize> = indices.into_iter().take(max_count as usize).collect();
+        return extract_subsampled_data(&points, &selected_indices, colors, scales, rotations, opacities);
+    }
+
+    let voxel_size = extent / grid_size as f32;
+
+    // Assign points to voxels
+    let mut voxel_points: std::collections::HashMap<(i32, i32, i32), Vec<usize>> =
+        std::collections::HashMap::new();
+    for (idx, pos) in points.iter().enumerate() {
+        let voxel_coord = (
+            ((pos.x - min.x) / voxel_size.x).floor() as i32,
+            ((pos.y - min.y) / voxel_size.y).floor() as i32,
+            ((pos.z - min.z) / voxel_size.z).floor() as i32,
+        );
+        voxel_points
+            .entry(voxel_coord)
+            .or_default()
+            .push(idx);
+    }
+
+    // Calculate points per voxel proportionally
+    let mut selected_indices = Vec::new();
+    let occupied_voxels = voxel_points.len();
+    let mut remaining_budget = max_count as usize;
+
+    // Sort voxels by point count for consistent sampling
+    let mut voxels: Vec<_> = voxel_points.into_iter().collect();
+    voxels.sort_by_key(|(_, points)| points.len());
+
+    for (i, (_, points)) in voxels.into_iter().enumerate() {
+        let voxels_remaining = occupied_voxels - i;
+        let points_for_this_voxel = if voxels_remaining == 1 {
+            remaining_budget.min(points.len())
+        } else {
+            let fair_share = remaining_budget / voxels_remaining;
+            fair_share.min(points.len())
+        };
+
+        if points_for_this_voxel > 0 {
+            if points_for_this_voxel >= points.len() {
+                selected_indices.extend(points);
+            } else {
+                // Random sample from this voxel using efficient selection
+                use rand::seq::SliceRandom;
+                let mut voxel_points = points;
+                voxel_points.shuffle(rng);
+                selected_indices.extend(voxel_points.into_iter().take(points_for_this_voxel));
+            }
+            remaining_budget -= points_for_this_voxel;
+        }
+
+        if remaining_budget == 0 {
+            break;
+        }
+    }
+
+    // Extract data using the selected indices
+    extract_subsampled_data(&points, &selected_indices, colors, scales, rotations, opacities)
+}
+
+fn extract_subsampled_data(
+    points: &[Vec3],
+    indices: &[usize],
+    colors: Option<Vec<f32>>,
+    scales: Option<Vec<f32>>,
+    rotations: Option<Vec<f32>>,
+    opacities: Option<Vec<f32>>,
+) -> SubsampledPointData {
+    // Sort indices for consistent results and bounds checking
+    let mut sorted_indices = indices.to_vec();
+    sorted_indices.sort_unstable();
+    
+    let subsampled_positions: Vec<f32> = sorted_indices
+        .iter()
+        .filter_map(|&i| points.get(i))
+        .flat_map(|p| [p.x, p.y, p.z])
+        .collect();
+
+    let subsampled_colors = colors.map(|c| {
+        sorted_indices
+            .iter()
+            .filter_map(|&i| {
+                let base = i * 3;
+                if base + 2 < c.len() {
+                    Some([c[base], c[base + 1], c[base + 2]])
+                } else {
+                    None
+                }
+            })
+            .flatten()
+            .collect()
+    });
+
+    let subsampled_scales = scales.map(|s| {
+        sorted_indices
+            .iter()
+            .filter_map(|&i| {
+                let base = i * 3;
+                if base + 2 < s.len() {
+                    Some([s[base], s[base + 1], s[base + 2]])
+                } else {
+                    None
+                }
+            })
+            .flatten()
+            .collect()
+    });
+
+    let subsampled_rotations = rotations.map(|r| {
+        sorted_indices
+            .iter()
+            .filter_map(|&i| {
+                let base = i * 4;
+                if base + 3 < r.len() {
+                    Some([r[base], r[base + 1], r[base + 2], r[base + 3]])
+                } else {
+                    None
+                }
+            })
+            .flatten()
+            .collect()
+    });
+
+    let subsampled_opacities = opacities.map(|o| {
+        sorted_indices
+            .iter()
+            .filter_map(|&i| o.get(i).copied())
+            .collect()
+    });
+
+    SubsampledPointData {
+        positions: subsampled_positions,
+        colors: subsampled_colors,
+        scales: subsampled_scales,
+        rotations: subsampled_rotations,
+        opacities: subsampled_opacities,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_subsample_density_aware_basic() {
+        // Create 100 points
+        let mut positions = Vec::new();
+        for i in 0..100 {
+            let x = (i % 10) as f32;
+            let y = (i / 10) as f32;
+            let z = 0.0;
+            positions.extend([x, y, z]);
+        }
+
+        let max_count = 50;
+        let mut rng = rand::rng();
+        let subsampled = subsample_points_density_aware(
+            positions, None, None, None, None, max_count, &mut rng
+        );
+
+        assert_eq!(subsampled.positions.len() / 3, max_count as usize);
+    }
+
+    #[test] 
+    fn test_subsample_density_aware_already_small() {
+        let positions = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2 points
+        let colors = Some(vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0]); // 2 colors
+
+        let max_count = 10;
+        let mut rng = rand::rng();
+        let subsampled = subsample_points_density_aware(
+            positions.clone(), colors.clone(), None, None, None, max_count, &mut rng
+        );
+
+        // Should return original data since it's already smaller than max_count
+        assert_eq!(subsampled.positions, positions);
+        assert_eq!(subsampled.colors, colors);
+    }
+}
+
 impl<B: Backend> Splats<B> {
     pub fn from_random_config(
         config: &RandomSplatsConfig,

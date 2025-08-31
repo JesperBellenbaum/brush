@@ -16,6 +16,8 @@ serde-ply.workspace = true
 tokio-stream.workspace = true
 async-fn-stream.workspace = true
 web-time.workspace = true
+log.workspace = true
+rand.workspace = true
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 tokio = { workspace = true, features = ["io-util"] }

@@ -327,7 +327,7 @@ mod tests {
                 .expect("Failed to serialize splats");
 
             let cursor = Cursor::new(ply_bytes);
-            let imported_message = load_splat_from_ply(cursor, None, device.clone())
+            let imported_message = load_splat_from_ply(cursor, None, device.clone(), None)
                 .await
                 .expect("Failed to deserialize splats");
             let imported_splats = imported_message.splats;

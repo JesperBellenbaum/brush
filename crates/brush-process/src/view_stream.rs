@@ -31,6 +31,7 @@ pub(crate) async fn view_stream(
             sub_sample,
             device.clone(),
             true,
+            None, // No max_splats for viewing
         );
 
         let mut splat_stream = pin!(splat_stream);

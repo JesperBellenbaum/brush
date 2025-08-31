@@ -16,6 +16,7 @@ use tokio::io::AsyncReadExt;
 use tokio_stream::StreamExt;
 
 use crate::ply_gaussian::{PlyGaussian, QuantSh, QuantSplat};
+use brush_render::gaussian_splats::subsample_points_density_aware;
 
 type StreamEmitter = TryStreamEmitter<SplatMessage, DeserializeError>;
 
@@ -103,14 +104,98 @@ pub async fn load_splat_from_ply<T: AsyncRead + SendNotWasm + Unpin>(
     reader: T,
     subsample_points: Option<u32>,
     device: WgpuDevice,
+    max_splats: Option<u32>,
 ) -> Result<SplatMessage, DeserializeError> {
-    let stream = stream_splat_from_ply(reader, subsample_points, device, false);
+    let stream = stream_splat_from_ply(reader, subsample_points, device, false, max_splats);
     let Some(splat) = pin!(stream).next().await else {
         return Err(DeserializeError::custom(
             "Couldn't load single splat from ply",
         ));
     };
-    splat
+
+    // Apply max_splats constraint if specified
+    let mut splat = splat?;
+    if let Some(max_count) = max_splats
+        && splat.splats.num_splats() > max_count
+    {
+        log::info!(
+            "Subsampling initial PLY points from {} to {} using density-aware sampling",
+            splat.splats.num_splats(),
+            max_count
+        );
+        splat.splats = apply_density_subsampling_to_splats(splat.splats, max_count).await;
+        splat.meta.total_splats = splat.splats.num_splats();
+    }
+
+    Ok(splat)
+}
+
+async fn apply_density_subsampling_to_splats(
+    splats: Splats<MainBackend>,
+    max_count: u32,
+) -> Splats<MainBackend> {
+    // Extract raw data from splats
+    let positions = splats
+        .means
+        .val()
+        .into_data_async()
+        .await
+        .into_vec::<f32>()
+        .expect("Failed to get positions");
+
+    let sh_coeffs = splats
+        .sh_coeffs
+        .val()
+        .into_data_async()
+        .await
+        .into_vec::<f32>()
+        .expect("Failed to get colors");
+
+    let log_scales = splats
+        .log_scales
+        .val()
+        .into_data_async()
+        .await
+        .into_vec::<f32>()
+        .expect("Failed to get scales");
+
+    let rotations = splats
+        .rotation
+        .val()
+        .into_data_async()
+        .await
+        .into_vec::<f32>()
+        .expect("Failed to get rotations");
+
+    let opacities = splats
+        .raw_opacity
+        .val()
+        .into_data_async()
+        .await
+        .into_vec::<f32>()
+        .expect("Failed to get opacities");
+
+    // Apply density-aware subsampling
+    let mut rng = rand::rng();
+    let subsampled = subsample_points_density_aware(
+        positions,
+        Some(sh_coeffs),
+        Some(log_scales),
+        Some(rotations),
+        Some(opacities),
+        max_count,
+        &mut rng,
+    );
+
+    // Create new Splats from subsampled data
+    Splats::from_raw(
+        subsampled.positions,
+        subsampled.scales,
+        subsampled.rotations,
+        subsampled.colors,
+        subsampled.opacities,
+        &splats.device(),
+    )
 }
 
 pub fn stream_splat_from_ply<T: AsyncRead + SendNotWasm + Unpin>(
@@ -118,6 +203,7 @@ pub fn stream_splat_from_ply<T: AsyncRead + SendNotWasm + Unpin>(
     subsample_points: Option<u32>,
     device: WgpuDevice,
     streaming: bool,
+    _max_splats: Option<u32>, // Currently unused in streaming, but for API consistency
 ) -> impl DynStream<Result<SplatMessage, DeserializeError>> {
     try_fn_stream(|emitter| async move {
         // TODO: Just make chunk ply take in data and try to get a header? Simpler maybe.
@@ -681,7 +767,9 @@ mod tests {
         let ply_bytes = splat_to_ply(original_splats.clone()).await.unwrap();
 
         let cursor = Cursor::new(ply_bytes);
-        let imported_message = load_splat_from_ply(cursor, None, device).await.unwrap();
+        let imported_message = load_splat_from_ply(cursor, None, device, None)
+            .await
+            .unwrap();
 
         assert_eq!(imported_message.splats.num_splats(), 1);
         assert_eq!(imported_message.splats.sh_degree(), 1);
@@ -697,7 +785,7 @@ mod tests {
             let ply_bytes = splat_to_ply(original_splats).await.unwrap();
 
             let cursor = Cursor::new(ply_bytes);
-            let imported_message = load_splat_from_ply(cursor, None, device.clone())
+            let imported_message = load_splat_from_ply(cursor, None, device.clone(), None)
                 .await
                 .unwrap();
 
@@ -717,14 +805,16 @@ mod tests {
 
         // Test no subsampling
         let cursor = Cursor::new(ply_bytes.clone());
-        let imported_message = load_splat_from_ply(cursor, None, device.clone())
+        let imported_message = load_splat_from_ply(cursor, None, device.clone(), None)
             .await
             .unwrap();
         assert_eq!(imported_message.splats.num_splats(), 4);
 
         // Test subsample every 2nd splat
         let cursor = Cursor::new(ply_bytes);
-        let imported_message = load_splat_from_ply(cursor, Some(2), device).await.unwrap();
+        let imported_message = load_splat_from_ply(cursor, Some(2), device, None)
+            .await
+            .unwrap();
         assert_eq!(imported_message.splats.num_splats(), 2);
     }
 }

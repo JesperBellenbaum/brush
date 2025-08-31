@@ -8,8 +8,8 @@ use crate::{
     scene::{LoadImage, SceneView},
 };
 use brush_render::{
-    camera::{self, Camera},
-    gaussian_splats::Splats,
+    camera::{Camera, focal_to_fov},
+    gaussian_splats::{Splats, subsample_points_density_aware},
     sh::rgb_to_sh,
 };
 use brush_serde::{ParseMetadata, SplatMessage};
@@ -52,6 +52,7 @@ pub(crate) async fn load_dataset(
     vfs: Arc<BrushVfs>,
     load_args: &LoadDataseConfig,
     device: &WgpuDevice,
+    max_splats: Option<u32>,
 ) -> Option<Result<(Option<SplatMessage>, Dataset), FormatError>> {
     log::info!("Loading colmap dataset");
 
@@ -65,7 +66,7 @@ pub(crate) async fn load_dataset(
         return None;
     };
 
-    Some(load_dataset_inner(vfs, load_args, device, cam_path, img_path).await)
+    Some(load_dataset_inner(vfs, load_args, device, cam_path, img_path, max_splats).await)
 }
 
 async fn load_dataset_inner(
@@ -74,6 +75,7 @@ async fn load_dataset_inner(
     device: &WgpuDevice,
     cam_path: PathBuf,
     img_path: PathBuf,
+    max_splats: Option<u32>,
 ) -> Result<(Option<SplatMessage>, Dataset), FormatError> {
     let is_binary = cam_path.ends_with("cameras.bin");
 
@@ -116,8 +118,8 @@ async fn load_dataset_inner(
         // Create a future to handle loading the image.
         let focal = cam_data.focal();
 
-        let fovx = camera::focal_to_fov(focal.0, cam_data.width as u32);
-        let fovy = camera::focal_to_fov(focal.1, cam_data.height as u32);
+        let fovx = focal_to_fov(focal.0, cam_data.width as u32);
+        let fovy = focal_to_fov(focal.1, cam_data.height as u32);
 
         let center = cam_data.principal_point();
         let center_uv = center / glam::vec2(cam_data.width as f32, cam_data.height as f32);
@@ -156,7 +158,7 @@ async fn load_dataset_inner(
         }
     }
 
-    let init = try_load_init(vfs, device, load_args).await;
+    let init = try_load_init(vfs, device, load_args, max_splats).await;
     let dataset = Dataset::from_views(train_views, eval_views);
     Ok((init, dataset))
 }
@@ -165,6 +167,7 @@ async fn try_load_init(
     vfs: Arc<BrushVfs>,
     device: &WgpuDevice,
     load_args: &LoadDataseConfig,
+    max_splats: Option<u32>,
 ) -> Option<SplatMessage> {
     let points_path = { vfs.files_ending_in("points3d.txt").next() }
         .or_else(|| vfs.files_ending_in("points3d.bin").next())?;
@@ -213,7 +216,25 @@ async fn try_load_init(
             [sh.x, sh.y, sh.z]
         })
         .collect();
-    let init_splat = Splats::from_raw(positions, None, None, Some(colors), None, device);
+    // Apply max_splats constraint if specified before creating Splats
+    let (final_positions, final_colors) = if let Some(max_count) = max_splats {
+        let initial_count = positions.len() / 3;
+        if initial_count > max_count as usize {
+            log::info!("Subsampling initial COLMAP points from {initial_count} to {max_count} using density-aware sampling");
+            let mut rng = rand::rng();
+            let subsampled = subsample_points_density_aware(
+                positions, Some(colors), None, None, None, max_count, &mut rng
+            );
+            (subsampled.positions, subsampled.colors)
+        } else {
+            (positions, Some(colors))
+        }
+    } else {
+        (positions, Some(colors))
+    };
+
+    let init_splat = Splats::from_raw(final_positions, None, None, final_colors, None, device);
+
     Some(SplatMessage {
         meta: ParseMetadata {
             up_axis: None,

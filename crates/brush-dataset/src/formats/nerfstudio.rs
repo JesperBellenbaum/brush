@@ -188,6 +188,7 @@ pub async fn read_dataset(
     vfs: Arc<BrushVfs>,
     load_args: &LoadDataseConfig,
     device: &WgpuDevice,
+    max_splats: Option<u32>,
 ) -> Option<Result<(Option<SplatMessage>, Dataset), FormatError>> {
     log::info!("Loading nerfstudio dataset");
 
@@ -203,7 +204,17 @@ pub async fn read_dataset(
             .or_else(|| vfs.files_ending_in("transforms_train.json").next())?
     };
 
-    Some(read_dataset_inner(vfs, load_args, device, json_files, transforms_path).await)
+    Some(
+        read_dataset_inner(
+            vfs,
+            load_args,
+            device,
+            json_files,
+            transforms_path,
+            max_splats,
+        )
+        .await,
+    )
 }
 
 async fn read_dataset_inner(
@@ -212,6 +223,7 @@ async fn read_dataset_inner(
     device: &WgpuDevice,
     json_files: Vec<std::path::PathBuf>,
     transforms_path: std::path::PathBuf,
+    _max_splats: Option<u32>, // nerfstudio doesn't have initial points, so unused
 ) -> Result<(Option<SplatMessage>, Dataset), FormatError> {
     let mut buf = String::new();
     vfs.reader_at_path(&transforms_path)
@@ -285,7 +297,13 @@ async fn read_dataset_inner(
 
         if let Ok(ply_data) = ply_data {
             init_splat = Some(
-                load_splat_from_ply(ply_data, load_args.subsample_points, device.clone()).await?,
+                load_splat_from_ply(
+                    ply_data,
+                    load_args.subsample_points,
+                    device.clone(),
+                    _max_splats,
+                )
+                .await?,
             );
         }
     }

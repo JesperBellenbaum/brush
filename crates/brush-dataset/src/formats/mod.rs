@@ -47,11 +47,12 @@ pub async fn load_dataset(
     vfs: Arc<BrushVfs>,
     load_args: &LoadDataseConfig,
     device: &WgpuDevice,
+    max_splats: Option<u32>,
 ) -> Result<(Option<SplatMessage>, Dataset), DatasetError> {
-    let mut dataset = colmap::load_dataset(vfs.clone(), load_args, device).await;
+    let mut dataset = colmap::load_dataset(vfs.clone(), load_args, device, max_splats).await;
 
     if dataset.is_none() {
-        dataset = nerfstudio::read_dataset(vfs.clone(), load_args, device).await;
+        dataset = nerfstudio::read_dataset(vfs.clone(), load_args, device, max_splats).await;
     }
 
     let Some(dataset) = dataset else {
@@ -80,7 +81,15 @@ pub async fn load_dataset(
             .reader_at_path(main_path)
             .await
             .map_err(DeserializeError)?;
-        Some(load_splat_from_ply(reader, load_args.subsample_points, device.clone()).await?)
+        Some(
+            load_splat_from_ply(
+                reader,
+                load_args.subsample_points,
+                device.clone(),
+                max_splats,
+            )
+            .await?,
+        )
     } else {
         data_splat_init
     };

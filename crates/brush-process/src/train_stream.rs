@@ -53,8 +53,13 @@ pub(crate) async fn train_stream(
     let mut rng = rand::rngs::StdRng::from_seed([process_config.seed as u8; 32]);
 
     log::info!("Loading dataset");
-    let (initial_splats, dataset) =
-        load_dataset(vfs.clone(), &process_args.load_config, &device).await?;
+    let (initial_splats, dataset) = load_dataset(
+        vfs.clone(),
+        &process_args.load_config,
+        &device,
+        Some(process_args.train_config.max_splats),
+    )
+    .await?;
 
     warner
         .warn_if_err(
