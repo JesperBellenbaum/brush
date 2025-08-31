@@ -134,6 +134,10 @@ async fn apply_density_subsampling_to_splats(
     splats: Splats<MainBackend>,
     max_count: u32,
 ) -> Splats<MainBackend> {
+    // --- wiggle room: target 80% of max_count ---
+    let target_count = ((max_count as f32) * 0.80).floor() as u32;
+    let target_count = target_count.max(1).min(max_count);
+
     // Extract raw data from splats
     let positions = splats
         .means
@@ -193,7 +197,7 @@ async fn apply_density_subsampling_to_splats(
         "invalid SH coeff array length"
     );
 
-    // Apply density-aware subsampling
+    // Apply density-aware subsampling to 80% target
     let mut rng = rand::rng();
     let subsampled = subsample_points_density_aware_with_sh_degree(
         positions,
@@ -201,22 +205,23 @@ async fn apply_density_subsampling_to_splats(
         Some(log_scales),
         Some(rotations),
         Some(opacities),
-        max_count,
+        target_count,
         sh_coeffs_per_splat,
         &mut rng,
     );
 
     // Create new Splats from subsampled data
-    // NOTE: Fixed argument order: rotations (4) then scales (3).
+    // NOTE: rotations first, then scales (correct order).
     Splats::from_raw(
         subsampled.positions,
-        subsampled.rotations, // rot_data (correct slot)
-        subsampled.scales,    // scale_data (correct slot)
+        subsampled.rotations, // rot_data
+        subsampled.scales,    // scale_data
         subsampled.colors,
         subsampled.opacities,
         &splats.device(),
     )
 }
+
 
 
 pub fn stream_splat_from_ply<T: AsyncRead + SendNotWasm + Unpin>(
